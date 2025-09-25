@@ -160,23 +160,37 @@ const Dashboard: React.FC<{ session: Session }> = ({ session }) => {
     fetchInitialData();
     
     const handleChanges = (payload: RealtimePostgresChangesPayload<{[key: string]: any}>) => {
+        console.log("Real-time change received:", payload); // Diagnostic log
+
         const { eventType, new: newRecord, old: oldRecord, table } = payload;
-        
+
         if (table === 'receivables') {
             setReceivables(current => {
-                if (eventType === 'INSERT') return [...current, newRecord as Receivable];
-                if (eventType === 'UPDATE') return current.map(r => r.id === newRecord.id ? newRecord as Receivable : r);
-                if (eventType === 'DELETE') return current.filter(r => r.id !== (oldRecord as Receivable).id);
-                return current;
+                switch (eventType) {
+                    case 'INSERT':
+                        return [...current, newRecord as Receivable];
+                    case 'UPDATE':
+                        return current.map(r => r.id === newRecord.id ? newRecord as Receivable : r);
+                    case 'DELETE':
+                        return current.filter(r => r.id !== (oldRecord as { id: string }).id);
+                    default:
+                        return current;
+                }
             });
         }
 
         if (table === 'revenues') {
              setRevenues(current => {
-                if (eventType === 'INSERT') return [...current, newRecord as Revenue];
-                if (eventType === 'UPDATE') return current.map(r => r.id === newRecord.id ? newRecord as Revenue : r);
-                if (eventType === 'DELETE') return current.filter(r => r.id !== (oldRecord as Revenue).id);
-                return current;
+                switch (eventType) {
+                    case 'INSERT':
+                        return [...current, newRecord as Revenue];
+                    case 'UPDATE':
+                        return current.map(r => r.id === newRecord.id ? newRecord as Revenue : r);
+                    case 'DELETE':
+                        return current.filter(r => r.id !== (oldRecord as { id: string }).id);
+                    default:
+                        return current;
+                }
             });
         }
     };
