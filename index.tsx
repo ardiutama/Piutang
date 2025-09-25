@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { createRoot } from 'react-dom/client';
 import { supabase } from './supabaseClient';
-import { Session } from '@supabase/supabase-js';
+import { Session, RealtimePostgresChangesPayload } from '@supabase/supabase-js';
 
 // --- TYPE DEFINITIONS ---
 interface Receivable {
@@ -79,7 +79,7 @@ const Auth: React.FC = () => {
             if (isLogin) {
                 const { error } = await supabase.auth.signInWithPassword({ email, password });
                 if (error) throw error;
-                alert('Login berhasil!');
+                // No alert needed, auth state change will handle UI
             } else {
                 const { error } = await supabase.auth.signUp({ email, password });
                 if (error) throw error;
@@ -159,19 +159,35 @@ const Dashboard: React.FC<{ session: Session }> = ({ session }) => {
 
     fetchInitialData();
     
-    // Set up real-time subscriptions
-    const receivablesSubscription = supabase.channel('public:receivables')
-        .on('postgres_changes', { event: '*', schema: 'public', table: 'receivables' }, () => fetchInitialData())
-        .subscribe();
+    const handleChanges = (payload: RealtimePostgresChangesPayload<{[key: string]: any}>) => {
+        const { eventType, new: newRecord, old: oldRecord, table } = payload;
+        
+        if (table === 'receivables') {
+            setReceivables(current => {
+                if (eventType === 'INSERT') return [...current, newRecord as Receivable];
+                if (eventType === 'UPDATE') return current.map(r => r.id === newRecord.id ? newRecord as Receivable : r);
+                if (eventType === 'DELETE') return current.filter(r => r.id !== (oldRecord as Receivable).id);
+                return current;
+            });
+        }
 
-    const revenuesSubscription = supabase.channel('public:revenues')
-        .on('postgres_changes', { event: '*', schema: 'public', table: 'revenues' }, () => fetchInitialData())
-        .subscribe();
+        if (table === 'revenues') {
+             setRevenues(current => {
+                if (eventType === 'INSERT') return [...current, newRecord as Revenue];
+                if (eventType === 'UPDATE') return current.map(r => r.id === newRecord.id ? newRecord as Revenue : r);
+                if (eventType === 'DELETE') return current.filter(r => r.id !== (oldRecord as Revenue).id);
+                return current;
+            });
+        }
+    };
+    
+    const channel = supabase.channel('db-changes')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'receivables' }, handleChanges)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'revenues' }, handleChanges)
+      .subscribe();
 
-    // Cleanup subscriptions on unmount
     return () => {
-        supabase.removeChannel(receivablesSubscription);
-        supabase.removeChannel(revenuesSubscription);
+        supabase.removeChannel(channel);
     };
   }, []);
 
@@ -282,11 +298,17 @@ const Dashboard: React.FC<{ session: Session }> = ({ session }) => {
       const remainingB = b.total_amount - b.paid_amount;
       if (remainingA > 0 && remainingB <= 0) return -1;
       if (remainingA <= 0 && remainingB > 0) return 1;
+      if (!a.due_date) return 1;
+      if (!b.due_date) return -1;
       return new Date(a.due_date).getTime() - new Date(b.due_date).getTime();
     }), [receivables]);
 
   const sortedRevenues = useMemo(() => 
-    [...revenues].sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime()), 
+    [...revenues].sort((a, b) => {
+        if (!a.date) return 1;
+        if (!b.date) return -1;
+        return new Date(b.date).getTime() - new Date(a.date).getTime();
+    }), 
     [revenues]
   );
 
