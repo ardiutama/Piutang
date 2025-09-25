@@ -168,6 +168,7 @@ const Dashboard: React.FC<{ session: Session }> = ({ session }) => {
             setReceivables(current => {
                 switch (eventType) {
                     case 'INSERT':
+                        if (current.some(r => r.id === (newRecord as Receivable).id)) return current;
                         return [...current, newRecord as Receivable];
                     case 'UPDATE':
                         return current.map(r => r.id === newRecord.id ? newRecord as Receivable : r);
@@ -183,6 +184,7 @@ const Dashboard: React.FC<{ session: Session }> = ({ session }) => {
              setRevenues(current => {
                 switch (eventType) {
                     case 'INSERT':
+                        if (current.some(r => r.id === (newRecord as Revenue).id)) return current;
                         return [...current, newRecord as Revenue];
                     case 'UPDATE':
                         return current.map(r => r.id === newRecord.id ? newRecord as Revenue : r);
@@ -198,7 +200,17 @@ const Dashboard: React.FC<{ session: Session }> = ({ session }) => {
     const channel = supabase.channel('db-changes')
       .on('postgres_changes', { event: '*', schema: 'public', table: 'receivables' }, handleChanges)
       .on('postgres_changes', { event: '*', schema: 'public', table: 'revenues' }, handleChanges)
-      .subscribe();
+      .subscribe((status, err) => {
+        if (status === 'SUBSCRIBED') {
+          console.log('Realtime channel subscribed!');
+        }
+        if (status === 'CHANNEL_ERROR') {
+          console.error(`Realtime channel error:`, err);
+        }
+         if (status === 'TIMED_OUT') {
+          console.warn('Realtime channel subscription timed out.');
+        }
+    });
 
     return () => {
         supabase.removeChannel(channel);
@@ -210,28 +222,38 @@ const Dashboard: React.FC<{ session: Session }> = ({ session }) => {
   const handleAddReceivable = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
     const formData = new FormData(e.currentTarget);
-    const { error } = await supabase.from('receivables').insert({
+    const { data, error } = await supabase.from('receivables').insert({
       description: formData.get('description') as string,
       total_amount: parseFloat(formData.get('totalAmount') as string),
       paid_amount: 0,
       due_date: formData.get('dueDate') as string,
       user_id: session.user.id
-    });
-    if (error) alert(error.message);
-    else setReceivableModalOpen(false);
+    }).select().single();
+
+    if (error) {
+        alert(error.message);
+    } else if (data) {
+        setReceivables(current => [...current, data as Receivable]);
+        setReceivableModalOpen(false);
+    }
   };
 
   const handleAddRevenue = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
     const formData = new FormData(e.currentTarget);
-    const { error } = await supabase.from('revenues').insert({
+    const { data, error } = await supabase.from('revenues').insert({
         description: formData.get('description') as string,
         amount: parseFloat(formData.get('amount') as string),
         date: formData.get('date') as string,
         user_id: session.user.id
-    });
-    if (error) alert(error.message);
-    else setRevenueModalOpen(false);
+    }).select().single();
+
+    if (error) {
+        alert(error.message);
+    } else if (data) {
+        setRevenues(current => [...current, data as Revenue]);
+        setRevenueModalOpen(false);
+    }
   };
   
   const handleRecordPayment = async (e: React.FormEvent<HTMLFormElement>) => {
@@ -241,13 +263,17 @@ const Dashboard: React.FC<{ session: Session }> = ({ session }) => {
     const formData = new FormData(e.currentTarget);
     const paymentAmount = parseFloat(formData.get('paymentAmount') as string);
     
-    const { error } = await supabase
+    const { data, error } = await supabase
       .from('receivables')
       .update({ paid_amount: Math.min(currentReceivable.total_amount, currentReceivable.paid_amount + paymentAmount) })
-      .eq('id', currentReceivable.id);
+      .eq('id', currentReceivable.id)
+      .select()
+      .single();
       
-    if (error) alert(error.message);
-    else {
+    if (error) {
+        alert(error.message);
+    } else if (data) {
+        setReceivables(current => current.map(r => r.id === data.id ? data as Receivable : r));
         setPaymentModalOpen(false);
         setCurrentReceivable(null);
     }
@@ -256,14 +282,22 @@ const Dashboard: React.FC<{ session: Session }> = ({ session }) => {
   const handleDeleteReceivable = async (id: string) => {
     if (window.confirm('Apakah Anda yakin ingin menghapus piutang ini?')) {
       const { error } = await supabase.from('receivables').delete().eq('id', id);
-      if (error) alert(error.message);
+      if (error) {
+          alert(error.message);
+      } else {
+          setReceivables(current => current.filter(r => r.id !== id));
+      }
     }
   };
 
   const handleDeleteRevenue = async (id: string) => {
     if (window.confirm('Apakah Anda yakin ingin menghapus pendapatan ini?')) {
       const { error } = await supabase.from('revenues').delete().eq('id', id);
-      if (error) alert(error.message);
+      if (error) {
+          alert(error.message);
+      } else {
+          setRevenues(current => current.filter(r => r.id !== id));
+      }
     }
   };
 
@@ -282,25 +316,37 @@ const Dashboard: React.FC<{ session: Session }> = ({ session }) => {
     const formData = new FormData(e.currentTarget);
   
     if (editingItem.type === 'receivable') {
-      const { error } = await supabase
+      const { data, error } = await supabase
         .from('receivables')
         .update({
             description: formData.get('description') as string,
             total_amount: parseFloat(formData.get('totalAmount') as string),
             due_date: formData.get('dueDate') as string,
         })
-        .eq('id', editingItem.data.id);
-      if (error) alert(error.message);
+        .eq('id', editingItem.data.id)
+        .select().single();
+
+      if (error) {
+          alert(error.message);
+      } else if (data) {
+          setReceivables(current => current.map(r => r.id === data.id ? data as Receivable : r));
+      }
     } else { // 'revenue'
-      const { error } = await supabase
+      const { data, error } = await supabase
         .from('revenues')
         .update({
             description: formData.get('description') as string,
             amount: parseFloat(formData.get('amount') as string),
             date: formData.get('date') as string,
         })
-        .eq('id', editingItem.data.id);
-      if (error) alert(error.message);
+        .eq('id', editingItem.data.id)
+        .select().single();
+
+      if (error) {
+          alert(error.message);
+      } else if (data) {
+          setRevenues(current => current.map(r => r.id === data.id ? data as Revenue : r));
+      }
     }
     handleCloseEditModal();
   };
