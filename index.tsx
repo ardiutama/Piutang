@@ -1,13 +1,15 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { createRoot } from 'react-dom/client';
+import { supabase } from './supabaseClient';
+import { Session } from '@supabase/supabase-js';
 
 // --- TYPE DEFINITIONS ---
 interface Receivable {
   id: string;
   description: string;
-  totalAmount: number;
-  paidAmount: number;
-  dueDate: string;
+  total_amount: number;
+  paid_amount: number;
+  due_date: string;
 }
 
 interface Revenue {
@@ -33,11 +35,13 @@ const formatCurrency = (amount: number) => {
 const formatDate = (dateString: string) => {
   if (!dateString) return '-';
   const date = new Date(dateString);
+  // Add timezone offset to prevent date from shifting
+  const timezoneOffset = date.getTimezoneOffset() * 60000;
   return new Intl.DateTimeFormat('id-ID', {
     day: '2-digit',
     month: 'long',
     year: 'numeric',
-  }).format(date);
+  }).format(new Date(date.getTime() + timezoneOffset));
 };
 
 // --- MODAL COMPONENT ---
@@ -59,9 +63,66 @@ const Modal: React.FC<ModalProps> = ({ isOpen, onClose, children }) => {
   );
 };
 
+// --- AUTH COMPONENT ---
+const Auth: React.FC = () => {
+    const [loading, setLoading] = useState(false);
+    const [email, setEmail] = useState('');
+    const [password, setPassword] = useState('');
+    const [isLogin, setIsLogin] = useState(true);
 
-// --- MAIN APP COMPONENT ---
-const App: React.FC = () => {
+    const handleAuth = async (e: React.FormEvent) => {
+        e.preventDefault();
+        setLoading(true);
+        try {
+            if (isLogin) {
+                const { error } = await supabase.auth.signInWithPassword({ email, password });
+                if (error) throw error;
+                alert('Login berhasil!');
+            } else {
+                const { error } = await supabase.auth.signUp({ email, password });
+                if (error) throw error;
+                alert('Pendaftaran berhasil! Silakan cek email Anda untuk verifikasi.');
+            }
+        } catch (error: any) {
+            alert(error.error_description || error.message);
+        } finally {
+            setLoading(false);
+        }
+    };
+    
+    return (
+        <div className="auth-container">
+            <div className="auth-form">
+                <h1>{isLogin ? 'Selamat Datang' : 'Buat Akun Baru'}</h1>
+                <p style={{textAlign: 'center', marginBottom: '1.5rem', color: 'var(--text-light-color)'}}>
+                    {isLogin ? 'Masuk untuk melanjutkan' : 'Daftar untuk mulai mengelola keuangan Anda'}
+                </p>
+                <form onSubmit={handleAuth}>
+                    <div className="form-group">
+                        <label htmlFor="email">Email</label>
+                        <input id="email" type="email" value={email} onChange={(e) => setEmail(e.target.value)} required />
+                    </div>
+                    <div className="form-group">
+                        <label htmlFor="password">Password</label>
+                        <input id="password" type="password" value={password} onChange={(e) => setPassword(e.target.value)} required />
+                    </div>
+                    <button type="submit" className="btn btn-primary" disabled={loading}>
+                        {loading ? 'Memproses...' : (isLogin ? 'Login' : 'Daftar')}
+                    </button>
+                </form>
+                 <div className="auth-actions">
+                    <button onClick={() => setIsLogin(!isLogin)}>
+                        {isLogin ? 'Belum punya akun? Daftar di sini' : 'Sudah punya akun? Login'}
+                    </button>
+                </div>
+            </div>
+        </div>
+    );
+};
+
+
+// --- DASHBOARD COMPONENT ---
+const Dashboard: React.FC<{ session: Session }> = ({ session }) => {
   // --- STATE MANAGEMENT ---
   const [activeTab, setActiveTab] = useState<ActiveTab>('receivables');
   const [receivables, setReceivables] = useState<Receivable[]>([]);
@@ -74,88 +135,103 @@ const App: React.FC = () => {
 
   const [currentReceivable, setCurrentReceivable] = useState<Receivable | null>(null);
   
-  // --- DATA PERSISTENCE with localStorage ---
+  // --- DATA FETCHING & REAL-TIME ---
   useEffect(() => {
-    try {
-        const storedReceivables = localStorage.getItem('receivables');
-        if (storedReceivables) setReceivables(JSON.parse(storedReceivables));
+    const fetchInitialData = async () => {
+        const { data: receivablesData, error: receivablesError } = await supabase
+            .from('receivables')
+            .select('*')
+            .order('due_date', { ascending: true });
         
-        const storedRevenues = localStorage.getItem('revenues');
-        if (storedRevenues) setRevenues(JSON.parse(storedRevenues));
-    } catch (error) {
-        console.error("Gagal memuat data dari localStorage:", error);
-    }
+        if (receivablesError) console.error('Error fetching receivables:', receivablesError);
+        else setReceivables(receivablesData as Receivable[]);
+
+        const { data: revenuesData, error: revenuesError } = await supabase
+            .from('revenues')
+            .select('*')
+            .order('date', { ascending: false });
+
+        if (revenuesError) console.error('Error fetching revenues:', revenuesError);
+        else setRevenues(revenuesData as Revenue[]);
+    };
+
+    fetchInitialData();
+    
+    // Set up real-time subscriptions
+    const receivablesSubscription = supabase.channel('public:receivables')
+        .on('postgres_changes', { event: '*', schema: 'public', table: 'receivables' }, () => fetchInitialData())
+        .subscribe();
+
+    const revenuesSubscription = supabase.channel('public:revenues')
+        .on('postgres_changes', { event: '*', schema: 'public', table: 'revenues' }, () => fetchInitialData())
+        .subscribe();
+
+    // Cleanup subscriptions on unmount
+    return () => {
+        supabase.removeChannel(receivablesSubscription);
+        supabase.removeChannel(revenuesSubscription);
+    };
   }, []);
 
-  useEffect(() => {
-    try {
-        localStorage.setItem('receivables', JSON.stringify(receivables));
-    } catch (error) {
-        console.error("Gagal menyimpan data piutang:", error);
-    }
-  }, [receivables]);
-  
-  useEffect(() => {
-    try {
-        localStorage.setItem('revenues', JSON.stringify(revenues));
-    } catch (error) {
-        console.error("Gagal menyimpan data pendapatan:", error);
-    }
-  }, [revenues]);
 
   // --- HANDLER FUNCTIONS ---
-  const handleAddReceivable = (e: React.FormEvent<HTMLFormElement>) => {
+  const handleAddReceivable = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
     const formData = new FormData(e.currentTarget);
-    const newReceivable: Receivable = {
-      id: crypto.randomUUID(),
+    const { error } = await supabase.from('receivables').insert({
       description: formData.get('description') as string,
-      totalAmount: parseFloat(formData.get('totalAmount') as string),
-      paidAmount: 0,
-      dueDate: formData.get('dueDate') as string,
-    };
-    setReceivables(prev => [...prev, newReceivable]);
-    setReceivableModalOpen(false);
+      total_amount: parseFloat(formData.get('totalAmount') as string),
+      paid_amount: 0,
+      due_date: formData.get('dueDate') as string,
+      user_id: session.user.id
+    });
+    if (error) alert(error.message);
+    else setReceivableModalOpen(false);
   };
 
-  const handleAddRevenue = (e: React.FormEvent<HTMLFormElement>) => {
+  const handleAddRevenue = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
     const formData = new FormData(e.currentTarget);
-    const newRevenue: Revenue = {
-      id: crypto.randomUUID(),
-      description: formData.get('description') as string,
-      amount: parseFloat(formData.get('amount') as string),
-      date: formData.get('date') as string,
-    };
-    setRevenues(prev => [...prev, newRevenue]);
-    setRevenueModalOpen(false);
+    const { error } = await supabase.from('revenues').insert({
+        description: formData.get('description') as string,
+        amount: parseFloat(formData.get('amount') as string),
+        date: formData.get('date') as string,
+        user_id: session.user.id
+    });
+    if (error) alert(error.message);
+    else setRevenueModalOpen(false);
   };
   
-  const handleRecordPayment = (e: React.FormEvent<HTMLFormElement>) => {
+  const handleRecordPayment = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
     if (!currentReceivable) return;
     
     const formData = new FormData(e.currentTarget);
     const paymentAmount = parseFloat(formData.get('paymentAmount') as string);
     
-    setReceivables(prev => prev.map(r => 
-      r.id === currentReceivable.id 
-        ? { ...r, paidAmount: Math.min(r.totalAmount, r.paidAmount + paymentAmount) }
-        : r
-    ));
-    setPaymentModalOpen(false);
-    setCurrentReceivable(null);
-  };
-
-  const handleDeleteReceivable = (id: string) => {
-    if (window.confirm('Apakah Anda yakin ingin menghapus piutang ini?')) {
-      setReceivables(prev => prev.filter(r => r.id !== id));
+    const { error } = await supabase
+      .from('receivables')
+      .update({ paid_amount: Math.min(currentReceivable.total_amount, currentReceivable.paid_amount + paymentAmount) })
+      .eq('id', currentReceivable.id);
+      
+    if (error) alert(error.message);
+    else {
+        setPaymentModalOpen(false);
+        setCurrentReceivable(null);
     }
   };
 
-  const handleDeleteRevenue = (id: string) => {
+  const handleDeleteReceivable = async (id: string) => {
+    if (window.confirm('Apakah Anda yakin ingin menghapus piutang ini?')) {
+      const { error } = await supabase.from('receivables').delete().eq('id', id);
+      if (error) alert(error.message);
+    }
+  };
+
+  const handleDeleteRevenue = async (id: string) => {
     if (window.confirm('Apakah Anda yakin ingin menghapus pendapatan ini?')) {
-      setRevenues(prev => prev.filter(r => r.id !== id));
+      const { error } = await supabase.from('revenues').delete().eq('id', id);
+      if (error) alert(error.message);
     }
   };
 
@@ -167,28 +243,32 @@ const App: React.FC = () => {
     setEditingItem(null);
   };
   
-  const handleUpdateItem = (e: React.FormEvent<HTMLFormElement>) => {
+  const handleUpdateItem = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
     if (!editingItem) return;
   
     const formData = new FormData(e.currentTarget);
   
     if (editingItem.type === 'receivable') {
-      const updatedReceivable: Receivable = {
-        ...(editingItem.data as Receivable),
-        description: formData.get('description') as string,
-        totalAmount: parseFloat(formData.get('totalAmount') as string),
-        dueDate: formData.get('dueDate') as string,
-      };
-      setReceivables(prev => prev.map(r => r.id === updatedReceivable.id ? updatedReceivable : r));
+      const { error } = await supabase
+        .from('receivables')
+        .update({
+            description: formData.get('description') as string,
+            total_amount: parseFloat(formData.get('totalAmount') as string),
+            due_date: formData.get('dueDate') as string,
+        })
+        .eq('id', editingItem.data.id);
+      if (error) alert(error.message);
     } else { // 'revenue'
-      const updatedRevenue: Revenue = {
-        ...(editingItem.data as Revenue),
-        description: formData.get('description') as string,
-        amount: parseFloat(formData.get('amount') as string),
-        date: formData.get('date') as string,
-      };
-      setRevenues(prev => prev.map(r => r.id === updatedRevenue.id ? updatedRevenue : r));
+      const { error } = await supabase
+        .from('revenues')
+        .update({
+            description: formData.get('description') as string,
+            amount: parseFloat(formData.get('amount') as string),
+            date: formData.get('date') as string,
+        })
+        .eq('id', editingItem.data.id);
+      if (error) alert(error.message);
     }
     handleCloseEditModal();
   };
@@ -196,11 +276,11 @@ const App: React.FC = () => {
   // --- DERIVED STATE / MEMOS ---
   const sortedReceivables = useMemo(() => 
     [...receivables].sort((a, b) => {
-      const remainingA = a.totalAmount - a.paidAmount;
-      const remainingB = b.totalAmount - b.paidAmount;
+      const remainingA = a.total_amount - a.paid_amount;
+      const remainingB = b.total_amount - b.paid_amount;
       if (remainingA > 0 && remainingB <= 0) return -1;
       if (remainingA <= 0 && remainingB > 0) return 1;
-      return new Date(a.dueDate).getTime() - new Date(b.dueDate).getTime();
+      return new Date(a.due_date).getTime() - new Date(b.due_date).getTime();
     }), [receivables]);
 
   const sortedRevenues = useMemo(() => 
@@ -210,8 +290,8 @@ const App: React.FC = () => {
 
   const receivablesSummary = useMemo(() => {
     return receivables.reduce((acc, curr) => {
-      acc.total += curr.totalAmount;
-      acc.remaining += (curr.totalAmount - curr.paidAmount);
+      acc.total += curr.total_amount;
+      acc.remaining += (curr.total_amount - curr.paid_amount);
       return acc;
     }, { total: 0, remaining: 0 });
   }, [receivables]);
@@ -228,7 +308,11 @@ const App: React.FC = () => {
   return (
     <div className="app-container">
       <header>
-        <h1>Manajemen Piutang & Pendapatan</h1>
+        <h1>PayLogix</h1>
+        <div className="user-info">
+            <span>{session.user.email}</span>
+            <button className="btn logout-btn" onClick={() => supabase.auth.signOut()}>Logout</button>
+        </div>
       </header>
 
       <nav className="tabs">
@@ -271,14 +355,14 @@ const App: React.FC = () => {
                   </thead>
                   <tbody>
                     {sortedReceivables.map((r, index) => {
-                      const remaining = r.totalAmount - r.paidAmount;
+                      const remaining = r.total_amount - r.paid_amount;
                       const isPaid = remaining <= 0;
                       return (
                         <tr key={r.id}>
                           <td>{index + 1}</td>
                           <td>{r.description}</td>
-                          <td>{formatDate(r.dueDate)}</td>
-                          <td>{formatCurrency(r.totalAmount)}</td>
+                          <td>{formatDate(r.due_date)}</td>
+                          <td>{formatCurrency(r.total_amount)}</td>
                           <td>{formatCurrency(remaining)}</td>
                           <td>
                             <span className={`status-badge ${isPaid ? 'status-paid' : 'status-unpaid'}`}>
@@ -411,10 +495,10 @@ const App: React.FC = () => {
       <Modal isOpen={isPaymentModalOpen} onClose={() => {setPaymentModalOpen(false); setCurrentReceivable(null);}}>
         <form onSubmit={handleRecordPayment}>
           <h3>Catat Pembayaran</h3>
-          <p>Sisa Piutang: <strong>{formatCurrency(currentReceivable?.totalAmount! - currentReceivable?.paidAmount!)}</strong></p>
+          <p>Sisa Piutang: <strong>{formatCurrency(currentReceivable?.total_amount! - currentReceivable?.paid_amount!)}</strong></p>
           <div className="form-group">
             <label htmlFor="p-paymentAmount">Jumlah Pembayaran (IDR)</label>
-            <input id="p-paymentAmount" name="paymentAmount" type="number" min="0" max={currentReceivable?.totalAmount! - currentReceivable?.paidAmount!} autoFocus required />
+            <input id="p-paymentAmount" name="paymentAmount" type="number" min="0" max={currentReceivable?.total_amount! - currentReceivable?.paid_amount!} autoFocus required />
           </div>
           <div className="modal-actions">
             <button type="button" className="btn btn-secondary" onClick={() => {setPaymentModalOpen(false); setCurrentReceivable(null);}}>Batal</button>
@@ -433,11 +517,11 @@ const App: React.FC = () => {
             </div>
             <div className="form-group">
                 <label htmlFor="e-r-totalAmount">Total Piutang (IDR)</label>
-                <input id="e-r-totalAmount" name="totalAmount" type="number" min="0" defaultValue={(editingItem.data as Receivable).totalAmount} required />
+                <input id="e-r-totalAmount" name="totalAmount" type="number" min="0" defaultValue={(editingItem.data as Receivable).total_amount} required />
             </div>
             <div className="form-group">
                 <label htmlFor="e-r-dueDate">Tanggal Jatuh Tempo</label>
-                <input id="e-r-dueDate" name="dueDate" type="date" defaultValue={(editingItem.data as Receivable).dueDate} required />
+                <input id="e-r-dueDate" name="dueDate" type="date" defaultValue={(editingItem.data as Receivable).due_date} required />
             </div>
             <div className="modal-actions">
                 <button type="button" className="btn btn-secondary" onClick={handleCloseEditModal}>Batal</button>
@@ -471,6 +555,31 @@ const App: React.FC = () => {
     </div>
   );
 };
+
+// --- MAIN APP COMPONENT ---
+const App: React.FC = () => {
+    const [session, setSession] = useState<Session | null>(null);
+
+    useEffect(() => {
+        supabase.auth.getSession().then(({ data: { session } }) => {
+            setSession(session);
+        });
+
+        const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+            setSession(session);
+        });
+
+        return () => subscription.unsubscribe();
+    }, []);
+
+    if (!session) {
+        return <Auth />;
+    } else {
+        // We use a key here to force re-mounting the Dashboard when the user changes, ensuring data is fresh.
+        return <Dashboard key={session.user.id} session={session} />;
+    }
+};
+
 
 const container = document.getElementById('root');
 if (container) {
