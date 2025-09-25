@@ -34,14 +34,16 @@ const formatCurrency = (amount: number) => {
 
 const formatDate = (dateString: string) => {
   if (!dateString) return '-';
+  // Using new Date() with a 'YYYY-MM-DD' string creates a date at UTC midnight.
+  // By specifying timeZone: 'UTC' in the formatter, we prevent the date from shifting
+  // due to the user's local timezone.
   const date = new Date(dateString);
-  // Add timezone offset to prevent date from shifting
-  const timezoneOffset = date.getTimezoneOffset() * 60000;
   return new Intl.DateTimeFormat('id-ID', {
     day: '2-digit',
     month: 'long',
     year: 'numeric',
-  }).format(new Date(date.getTime() + timezoneOffset));
+    timeZone: 'UTC',
+  }).format(date);
 };
 
 // --- MODAL COMPONENT ---
